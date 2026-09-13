@@ -1,1 +1,1 @@
- streamlit streamlit-autorefresh
+streamlit streamlit-autorefresh
