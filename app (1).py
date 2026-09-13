@@ -36,13 +36,10 @@ Ejecutar con: streamlit run app.py
 """
 
 import streamlit as st
-import streamlit.components.v1 as components
 import time
 import random
 import re
 import unicodedata
-import json
-from typing import Optional
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -1103,88 +1100,6 @@ def render_cronometro(segundos_restantes: float, critico_seg: int = 30):
     st.markdown(f'<div class="{clase}">⏱️ {mins:02d}:{secs:02d}</div>', unsafe_allow_html=True)
 
 
-def render_cronometro_js(
-    inicio_epoch: float,
-    limite_seg: int,
-    key: str,
-    critico_seg: int = 30,
-    lock_aria_label: Optional[str] = None,
-):
-    """Cronómetro que corre en el navegador vía JavaScript, independiente de
-    los reruns de Streamlit. Así sigue tickeando segundo a segundo aunque el
-    usuario esté escribiendo y el backend tarde en refrescar (Streamlit
-    posterga los reruns automáticos mientras hay un widget de texto con
-    ediciones pendientes).
-
-    Si se pasa lock_aria_label, apenas el reloj llega a cero le hace blur al
-    textarea (fuerza a Streamlit a sincronizar lo último que se escribió) y
-    lo pone en solo-lectura visualmente "apagado", para que el teclado quede
-    bloqueado al instante en el navegador.
-
-    A propósito NO se simula un clic sobre el botón "Finalizar": clickear
-    por JS un botón que React/Streamlit controla puede pisar la
-    reconciliación del DOM en pleno rerun y produce
-    "NotFoundError: removeChild" en el navegador. El corte real en el
-    servidor queda a cargo del autorefresh de respaldo (ver más abajo en
-    cada módulo), que es un mecanismo soportado por Streamlit para disparar
-    reruns, en vez de este hack.
-    """
-    inicio_ms = int(inicio_epoch * 1000)
-    lock_label_js = json.dumps(lock_aria_label) if lock_aria_label else "null"
-    html = f"""
-    <div id="crono_{key}" style="font-size:22px;font-weight:700;color:#1B365D;
-         background:#EAF1FB;border-radius:8px;padding:8px 16px;display:inline-block;
-         font-family:'Segoe UI',-apple-system,BlinkMacSystemFont,sans-serif;">⏱️ --:--</div>
-    <script>
-    (function() {{
-        const inicio = {inicio_ms};
-        const total = {limite_seg};
-        const critico = {critico_seg};
-        const el = document.getElementById("crono_{key}");
-        const lockLabel = {lock_label_js};
-        let bloqueado = false;
-
-        function bloquearVisualmente() {{
-            if (bloqueado) return;
-            bloqueado = true;
-            try {{
-                if (lockLabel) {{
-                    const doc = window.parent.document;
-                    const ta = doc.querySelector('textarea[aria-label="' + lockLabel + '"]');
-                    if (ta) {{
-                        if (doc.activeElement === ta) {{ ta.blur(); }}
-                        ta.readOnly = true;
-                        ta.style.backgroundColor = "#EEF0F2";
-                        ta.style.color = "#8A8F98";
-                        ta.style.cursor = "not-allowed";
-                    }}
-                }}
-            }} catch (e) {{ /* si el navegador bloquea el acceso al frame padre, no pasa nada grave */ }}
-        }}
-
-        function tick() {{
-            const transcurrido = (Date.now() - inicio) / 1000;
-            const restante = Math.max(0, total - transcurrido);
-            const mins = String(Math.floor(restante / 60)).padStart(2, "0");
-            const secs = String(Math.floor(restante % 60)).padStart(2, "0");
-            el.innerHTML = "⏱️ " + mins + ":" + secs;
-            if (restante <= critico) {{
-                el.style.color = "#B32424";
-                el.style.background = "#FBEAEA";
-            }}
-            if (restante <= 0) {{
-                bloquearVisualmente();
-            }} else {{
-                setTimeout(tick, 250);
-            }}
-        }}
-        tick();
-    }})();
-    </script>
-    """
-    components.html(html, height=50)
-
-
 def render_diff_dactilografia(texto_modelo: str, transcripcion: str):
     """Muestra el texto modelo resaltando en verde las palabras que
     coinciden con lo escrito, en rojo las que no coinciden, y en gris las
@@ -1455,15 +1370,7 @@ if modulo.startswith("✍️"):
         if st.session_state["orto_pausada"]:
             render_cronometro(max(0, restante))
         else:
-            # inicio "virtual": le restamos lo ya acumulado para que el reloj
-            # JS calcule bien el tiempo transcurrido incluso después de una pausa.
-            virtual_inicio = time.time() - st.session_state["orto_acumulado"]
-            render_cronometro_js(
-                virtual_inicio,
-                limite_seg,
-                key="orto",
-                lock_aria_label="Texto a corregir",
-            )
+            render_cronometro(max(0, restante))
         if restante <= 0 and not st.session_state["orto_finalizada"]:
             _evaluar_orto(st.session_state.get("orto_area_widget", st.session_state["orto_texto_editable"]))
             # Sin st.rerun() acá a propósito: el estado ya quedó actualizado
@@ -1589,15 +1496,10 @@ elif modulo.startswith("⌨️"):
             st.session_state["dacti_finalizada"] = False
             st.rerun()
     elif st.session_state["dacti_iniciada"]:
-        render_cronometro_js(
-            st.session_state["dacti_inicio"],
-            limite_seg,
-            key="dacti",
-            lock_aria_label="Transcriba el texto exactamente como aparece a la izquierda:",
-        )
-
         transcurrido = time.time() - st.session_state["dacti_inicio"]
         restante = limite_seg - transcurrido
+        render_cronometro(max(0, restante))
+
         if restante <= 0:
             st.warning("⏱️ Se agotó el tiempo. La prueba se corrigió automáticamente con lo transcripto hasta ahora.")
             # Se registra el tiempo REAL transcurrido (puede ser un poco mayor
@@ -1759,7 +1661,7 @@ elif modulo.startswith("📋"):
     if st.session_state["teorico_iniciado"]:
         transcurrido = time.time() - st.session_state["teorico_inicio"]
         restante = limite_seg_teo - transcurrido
-        render_cronometro_js(st.session_state["teorico_inicio"], limite_seg_teo, key="teorico", critico_seg=120)
+        render_cronometro(max(0, restante), critico_seg=120)
 
         if restante <= 0:
             st.warning("⏱️ Se agotó el tiempo. El examen se envió automáticamente con las respuestas marcadas hasta el momento.")
